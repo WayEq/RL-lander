@@ -1,274 +1,149 @@
+import random
+
 import gym
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+from nn import NN
+import math
+# from tests import test_calc_next_state_expected_value, test_feed_forward, test_calc_output_grad, test_calc_hidden_grad
+from graphing import *
 env = gym.make('LunarLander-v2')
 
 np.random.seed(0)
-debug = True
 debug = False
 
-mapper = lambda t: 0 if t < 0 else 1
-f = np.vectorize(mapper)
 epsilon = .01
-step_size = .0001
-dp = []
-class NN(object):
-
-    def __init__(self, num_input, num_hidden, num_output, weights_hidden, bias_hidden, weights_output, bias_output):
-        self.num_input = num_input
-        self.num_hidden = num_hidden
-        self.num_output = num_output
-        self.weights_hidden = weights_hidden
-        self.bias_hidden = bias_hidden
-        self.weights_output = weights_output
-        self.bias_output = bias_output
-        self.last_hidden_output = 0
-        self.hidden_z = 0
-        self.last_output = []
-        self.last_input = 0
-
-    def feed_forward(self, state):
-        self.last_input = state
-        self.hidden_z, self.last_hidden_output, self.last_output = self.get_layer_outputs_for_state(state)
-
-    def get_layer_outputs_for_state(self, state):
-        dot_prod = np.dot(state, self.weights_hidden) + self.bias_hidden
-        hidden_z = dot_prod
-        hidden_output = np.maximum(dot_prod, 0)
-        output = np.dot(hidden_output, self.weights_output) + self.bias_output
-        return np.copy(hidden_z), np.copy(hidden_output), np.copy(output)
-
-    def update(self, action_node_index, target):
-        pre_cost = ((target - self.last_output[action_node_index]) ** 2) / 2.0
-
-        output_error, output_bias_gradient, output_weights_gradient = self.calc_output_gradients(action_node_index, target)
-        #
-        # old_weights_out = np.copy(self.weights_output)
-        # old_bias_out =  np.copy(self.bias_output)
-
-        self.weights_output[:, action_node_index] -= output_weights_gradient * step_size
-        self.bias_output[action_node_index] -= output_bias_gradient * step_size
-
-
-        hidden_error, hidden_weights_gradient, hidden_bias_gradient = self.calc_hidden_nodes_gradient(output_error, action_node_index)
-
-        if np.random.rand() > .99:
-            self.debug_weights()
-
-        # print("output bias grad ", output_bias_gradient)
-
-        # old_hidden_weights, old_hidden_bias  = np.copy(self.weights_hidden), np.copy(self.bias_hidden)
-        self.weights_hidden -= hidden_weights_gradient * step_size
-        self.bias_hidden -= hidden_bias_gradient * step_size
-
-        # new_cost = ((target - self.get_layer_outputs_for_state(state)[2][action_node_index]) ** 2) / 2.0
-        # cost_change = new_cost - pre_cost
-        # print("c_delta", cost_change)
-        # global dp
-        #dp.append(cost_change)
-
-        # if (cost_change > 0):
-        #     s = pd.Series(dp[-1000:])
-        #     s.plot()
-        #     plt.show()
-        #     raise ValueError("Cost increased from ", pre_cost, " to ", new_cost)
-
-
-
-    def calc_output_gradients(self, action_node_index, target):
-        error = self.last_output[action_node_index] - target
-        output_weights_gradient = self.last_hidden_output * error
-        output_bias_gradient = error
-        return error, output_bias_gradient, output_weights_gradient
-
-
-    def calc_hidden_nodes_gradient(self, output_error, action):
-        activation_derivative = f(self.hidden_z)
-
-        error = self.weights_output[:,action] * output_error * activation_derivative
-
-        #print("error (hidden)", error)
-        tile = np.tile(self.last_input, (self.num_hidden, 1))
-        hidden_weights_gradient = np.transpose(tile) * error
-        hidden_bias_gradient = error
-        return error, hidden_weights_gradient, hidden_bias_gradient
-
-    def debug_weights(self):
-        array_sum = np.sum(self.weights_hidden)
-        array_has_nan = np.isnan(array_sum)
-        if array_has_nan:
-            raise ValueError("nan in hidden")
-        array_sum = np.sum(self.weights_output)
-        array_has_nan = np.isnan(array_sum)
-        if array_has_nan:
-            raise ValueError("nan in output")
-
+# dp = []
 
 
 def choose_action(nn, state):
+    action_values = nn.feed_forward(state, False)
     p = np.random.rand()
     if p < epsilon:
-        return np.random.randint(0, num_actions)
+        return np.random.randint(0, len(action_values))
     else:
-        outputs = nn.get_layer_outputs_for_state(state)[2]
-        return np.argmax(outputs)
+        return np.argmax(action_values)
 
 
-def update_action_values(nn, action, state_prime, reward, done, state):
+def update_action_values(nn, state, action, state_prime, reward, done):
     if done:
         target = reward
     else:
-        action_values = nn.get_layer_outputs_for_state(state_prime)[2]
+        action_values = nn.feed_forward(state_prime, False)
         state_prime_value = calc_state_prime_value(action_values)
         target = reward + state_prime_value
 
-    nn.update(action, target)
+    if debug:
+        nn.update_with_cost_check(state, action, target)
+    else:
+        nn.update_with_cost_check(state, action, target)
 
 
 def calc_state_prime_value(action_values):
-    if (len(action_values) == 1):
+    if len(action_values) == 1:
         print("predicted next state vlaue ",  action_values[0])
         return action_values[0]
-    weights = np.ones((len(action_values))) * (epsilon / (len(action_values) -1))
-    weights[np.argmax(action_values)] = 1-epsilon
-    prediction = np.dot(action_values, weights)
-    # print("predicted next state vlaue ", prediction)
-    # if prediction < -16.28:
-    #    print("shit")
+    action_weights = np.ones((len(action_values))) * (epsilon / (len(action_values) -1))
+    action_weights[np.argmax(action_values)] = 1-epsilon
+    prediction = np.dot(action_values, action_weights)
+
     return prediction
 
 
-# TEST
-def test_calc_next_state_expected_value():
-    output = calc_state_prime_value([1, 2, 3, 4])
-    if output != 4 * (1 - epsilon) + 1 * epsilon/3 + 2 * epsilon/3 + 3 * epsilon/3:
-        raise ValueError("expected next state value is wrong")
+model_size = 2
+def update_model():
+    global model
+    model_entry = {"action": action, "state prime": state_prime, "reward": reward, "state": state, "done": done}
+    model.append(model_entry)
+    if len(model) > 2:
+        model = model[1:]
 
-
-def test_feed_forward():
-    test_num_input = 1
-    test_num_hidden = 2
-    test_num_output = 1
-
-    test_hidden_weights = np.ones((test_num_input, test_num_hidden))
-    test_out_weights = np.ones((test_num_hidden, test_num_output)) * 2
-    test_hidden_bias = np.ones(test_num_hidden)
-    test_out_bias = np.ones(test_num_output)
-    nn = NN(test_num_input, test_num_hidden, test_num_output, test_hidden_weights, test_hidden_bias, test_out_weights, test_out_bias)
-
-    state = np.ones(test_num_input) * 10
-    nn.feed_forward(state)
-    if not np.allclose(nn.last_hidden_output, np.ones(test_num_hidden) * test_num_input * 10 + 1):
-        raise ValueError("hidden outputs are off")
-    if not np.allclose(nn.last_output, np.sum(nn.last_hidden_output* 2) + 1):
-        raise ValueError("output outputs are off")
-
-
-def test_calc_output_grad():
-    test_num_input = 1
-    test_num_hidden = 2
-    test_num_output = 1
-
-    test_hidden_weights = np.ones((test_num_input, test_num_hidden))
-    test_out_weights = np.ones((test_num_hidden, test_num_output))
-    test_hidden_bias = np.zeros(test_num_hidden)
-    test_out_bias = np.zeros(test_num_output)
-    nn = NN(test_num_input, test_num_hidden, test_num_output, test_hidden_weights, test_hidden_bias, test_out_weights, test_out_bias)
-    nn.feed_forward([1])
-    error, out_bias_gradient, out_weights_gradient = nn.calc_output_gradients(0, 0)
-    if not np.allclose(2, out_weights_gradient):
-        raise ValueError("out weight gradient is off")
-
-    if not np.allclose(2, out_bias_gradient):
-        raise ValueError("out bias gradient is off")
-
-
-def test_calc_hidden_grad():
-    test_num_input = 1
-    test_num_hidden = 2
-    test_num_output = 1
-
-    test_hidden_weights = np.ones((test_num_output, test_num_hidden))
-    test_out_weights = np.ones((test_num_hidden, test_num_output))
-    test_hidden_bias = np.zeros(test_num_hidden)
-    test_out_bias = np.zeros(test_num_output)
-    nn = NN(test_num_input, test_num_hidden, test_num_output, test_hidden_weights, test_hidden_bias, test_out_weights, test_out_bias)
-    nn.feed_forward([1])
-    hidden_error, hidden_weights_gradient, hidden_bias_gradient = nn.calc_hidden_nodes_gradient(2,0)
-    if not np.allclose(2, hidden_weights_gradient):
-        raise ValueError("hidden weight gradient is off")
-
-    if not np.allclose(2, hidden_bias_gradient):
-        raise ValueError("hidden bias gradient is off")
-
-
-
-# END TEST
 
 if __name__ == '__main__':
 
     avg_reward = 0
     i = 0
 
-    if debug:
-        num_actions = 1
-        num_input = 1
-        num_hidden = 1
-        # init_weights_hidden = np.ones((num_input, num_hidden))
-        # init_bias_hidden = np.ones((num_hidden))
-        # init_weights_out = np.ones((num_hidden, num_actions))
-        # init_bias_out = np.ones((num_actions))
-        init_weights_hidden = np.random.rand(num_input, num_hidden)
-        init_bias_hidden = np.random.rand(num_hidden)
-        init_weights_out = np.random.rand(num_hidden, num_actions)
-        init_bias_out = np.random.rand(num_actions)
-    else:
-        test_calc_next_state_expected_value()
-        test_feed_forward()
-        test_calc_output_grad()
-        test_calc_hidden_grad()
-        num_actions = 4
-        num_input = 8
-        num_hidden = 16
-        init_weights_hidden = np.random.rand(num_input, num_hidden)
-        init_bias_hidden = np.random.rand(num_hidden)
-        init_weights_out = np.random.rand(num_hidden, num_actions)
-        init_bias_out = np.random.rand(num_actions)
+    weights = []
+    bias = []
 
-    nn = NN(num_input, num_hidden, num_actions, init_weights_hidden, init_bias_hidden, init_weights_out, init_bias_out)
+    # test_calc_next_state_expected_value()
+    # test_feed_forward()
+    # test_calc_output_grad()
+    # test_calc_hidden_grad()
+
+    if debug:
+        layer_node_count = [1,1,1]
+        weight_generator = lambda upstream, current : np.ones((upstream, current))
+        bias_generator = lambda current : np.ones(current)
+        stepper = lambda action: (np.ones(layer_node_count[0]), -1, False, 0)
+    else:
+        layer_node_count = [8, 32, 4]
+        weight_generator = lambda upstream, current : np.random.normal(0, math.sqrt(upstream), (upstream, current))
+        bias_generator = lambda current : np.random.normal(0, 1, current)
+        stepper = lambda action:  env.step(action)
+
+
+    upstream_count = layer_node_count[0]
+
+    for i in layer_node_count[1:]:
+        weights.append(weight_generator(upstream_count, i))
+        bias.append(bias_generator(i))
+        upstream_count = i
+
+    config = {
+        "weights": weights,
+        "bias": bias,
+        "learning rate": .00001,
+        "debug": debug,
+        "batch size": 1
+    }
+
+    model = []
+    nn = NN(config)
     while True:
         if debug:
-            state = np.ones(num_input)
+            state = np.ones(layer_node_count[0])
         else:
             state = env.reset()
+
         action = choose_action(nn, state)
         total_reward = 0
-        rendering = i % 50 == 0 and i != 0
-        for t in range(10000):
+        rendering =  i % 100 == 0 and i != 0
+
+        t = 0
+        while True:
             if rendering:
                 env.render()
             # time.sleep(.001)
             nn.feed_forward(state)
-            if debug:
-                state_prime, reward, done = np.ones(num_input), -1, False
-                if t != 0 and t % 10 == 0:
-                    done = True
-                    reward = 0
+            state_prime, reward, done, info = stepper(action)
+            update_model()
+
+
+            if debug and t % 10 == 0 and t != 0:
+                done = True
+                reward = 0
+                t = 0
             else:
-                state_prime, reward, done, info = env.step(action)
+                t +=1
 
             total_reward += reward
-            update_action_values(nn, action, state_prime, reward, done, state)
+            update_action_values(nn, state, action, state_prime, reward, done)
             if done:
+                if reward > 0:
+                    print ("done with final reward ", total_reward)
                 break
             action = choose_action(nn, state_prime)
             state = state_prime
-
+        exp_replay_size = 2
+        if len(model) > exp_replay_size:
+            for _ in range(exp_replay_size):
+                choice = random.choice(model)
+                nn.feed_forward(choice["state"])
+                update_action_values(nn, choice["state"], choice["action"], choice["state prime"], choice["reward"], choice["done"])
         avg_reward += total_reward
         i += 1
-        rep_freq = 50
+        rep_freq = 100
         if i % rep_freq == 0:
-            print("Avg reward now ", avg_reward / rep_freq)
+            graph_average_reward(avg_reward / rep_freq)
             avg_reward = 0
 env.close()
