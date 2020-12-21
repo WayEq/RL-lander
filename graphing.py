@@ -6,42 +6,46 @@ style.use('fivethirtyeight')
 
 plt.style.use('ggplot')
 
-avgs = []
+values = {}
 
+np.random.seed(1)
 graph_range = 300
-index = range(300)
-avgs = np.random.randn(len(index))
-rep_freq = 10
-line1 = []
 
-def graph_average_reward(avg_reward):
-    global avgs, epsilon, line1
-    print("Avg reward now ", avg_reward)
-    avgs = np.append(avgs[1:], float(avg_reward))
-    line1 = live_plotter(index, avgs, line1)
-    # epsilon = 1 - ((avg_reward + 20200) / 20400)
-    # avg_reward = 0
+reinit = False
+def add_value(value, title):
+    global values, reinit
 
-def live_plotter(x_vec, y1_data, line1, identifier='', pause_time=0.1):
-    if line1 == []:
-        # this is the call to matplotlib that allows dynamic plotting
-        plt.ion()
-        fig = plt.figure(figsize=(13, 6))
-        ax = fig.add_subplot(111)
-        # create a variable for the line so we can later update it
-        line1, = ax.plot(x_vec, y1_data, '-o', alpha=0.8)
-        # update plot label/title
-        plt.ylabel('Y Label')
-        plt.title('Title: {}'.format(identifier))
-        plt.show()
+    if not title in values:
+        values[title] = []
+        reinit = True
 
-    # after the figure, axis, and line are created, we only need to update the y-data
-    line1.set_ydata(y1_data)
-    # adjust limits if new data goes beyond bounds
-    if np.min(y1_data) <= line1.axes.get_ylim()[0] or np.max(y1_data) >= line1.axes.get_ylim()[1]:
-        plt.ylim([np.min(y1_data) - np.std(y1_data), np.max(y1_data) + np.std(y1_data)])
-    # this pauses the data so the figure/axis can catch up - the amount of pause can be altered above
+    values[title] = np.append(values[title], float(value))
+
+    if len(values[title]) > graph_range:
+        values[title] = values[title][1:]
+
+ax_global = None
+fig = None
+def live_plotter(pause_time=0.01):
+    global lines, fig, ax_global, reinit
+    num_plots = len(values)
+    if fig is None or reinit:
+        if fig is not None:
+            plt.close(fig)
+        fig, ax_global = plt.subplots(num_plots, figsize=(13,7))
+        reinit = False
+
+    i = 0
+
+    for key, value in values.items():
+        ax = ax_global
+        if num_plots > 1:
+            ax = ax_global[i]
+        ax.clear()
+        ax.plot(values[key])
+        ax.set_title(key)
+        i += 1
+    plt.ion()
+
+    plt.show()
     plt.pause(pause_time)
-
-    # return line so we can update it again in the next iteration
-    return line1

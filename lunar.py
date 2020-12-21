@@ -1,149 +1,190 @@
-import random
-
 import gym
+import tests
 from nn import NN
-import math
-# from tests import test_calc_next_state_expected_value, test_feed_forward, test_calc_output_grad, test_calc_hidden_grad
+
 from graphing import *
-env = gym.make('LunarLander-v2')
 
-np.random.seed(0)
-debug = False
-
-epsilon = .01
-# dp = []
+np.random.seed(1)
 
 
-def choose_action(nn, state):
-    action_values = nn.feed_forward(state, False)
-    p = np.random.rand()
-    if p < epsilon:
-        return np.random.randint(0, len(action_values))
+def init_saxe(rows, cols):
+
+    tensor = np.random.normal(0, 1, (rows, cols))
+    if rows < cols:
+        tensor = tensor.T
+    tensor, r = np.linalg.qr(tensor)
+    d = np.diag(r, 0)
+    ph = np.sign(d)
+    tensor *= ph
+
+    if rows < cols:
+        tensor = tensor.T
+    return tensor
+
+
+def initialize():
+    env = gym.make('LunarLander-v2')
+    # env.seed(0)
+    config = {
+        "learning rate": 1e-3,
+        "debug": False,
+        "layer node count": [8, 256, 4],
+        "first moment decay rate": .9,
+        #"first moment decay rate": 0,
+        "second moment decay rate": .999,
+        #"second moment decay rate": 0,
+        "experience replay size": 8,
+        "replay batches": 4,
+        "model size": 50000,
+        "discount": .99,
+        "report frequency": 10,
+        "number episodes": np.inf,
+        "initial temp": .001,
+        "temp adjustment": 1,
+        "adam epsilon": 1e-8
+    }
+
+    if config["debug"]:
+        config["layer node count"] = [2, 2, 1]
+
+        def weight_generator(upstream, current):
+            return np.ones((upstream, current))
+
+        def bias_generator(current):
+            return np.ones(current)
+
+        def stepper(_):
+            input_count = config["layer node count"][0]
+            return np.ones(input_count), -1, False, 0
+
+        def init_env():
+            return np.ones(config["layer node count"][0])
     else:
-        return np.argmax(action_values)
+        # layer_node_count = [8, 8, 4]
 
+        def weight_generator(upstream, current):
+            return init_saxe(upstream,current)
+            #return np.random.normal(0, 1, (upstream, current)) / np.sqrt(upstream)
 
-def update_action_values(nn, state, action, state_prime, reward, done):
-    if done:
-        target = reward
-    else:
-        action_values = nn.feed_forward(state_prime, False)
-        state_prime_value = calc_state_prime_value(action_values)
-        target = reward + state_prime_value
+        def bias_generator(current):
+            return np.zeros(current)
 
-    if debug:
-        nn.update_with_cost_check(state, action, target)
-    else:
-        nn.update_with_cost_check(state, action, target)
+        def stepper(action):
+            return env.step(action)
 
-
-def calc_state_prime_value(action_values):
-    if len(action_values) == 1:
-        print("predicted next state vlaue ",  action_values[0])
-        return action_values[0]
-    action_weights = np.ones((len(action_values))) * (epsilon / (len(action_values) -1))
-    action_weights[np.argmax(action_values)] = 1-epsilon
-    prediction = np.dot(action_values, action_weights)
-
-    return prediction
-
-
-model_size = 2
-def update_model():
-    global model
-    model_entry = {"action": action, "state prime": state_prime, "reward": reward, "state": state, "done": done}
-    model.append(model_entry)
-    if len(model) > 2:
-        model = model[1:]
-
-
-if __name__ == '__main__':
-
-    avg_reward = 0
-    i = 0
+        def init_env():
+            return env.reset()
 
     weights = []
     bias = []
 
-    # test_calc_next_state_expected_value()
-    # test_feed_forward()
-    # test_calc_output_grad()
-    # test_calc_hidden_grad()
-
-    if debug:
-        layer_node_count = [1,1,1]
-        weight_generator = lambda upstream, current : np.ones((upstream, current))
-        bias_generator = lambda current : np.ones(current)
-        stepper = lambda action: (np.ones(layer_node_count[0]), -1, False, 0)
-    else:
-        layer_node_count = [8, 32, 4]
-        weight_generator = lambda upstream, current : np.random.normal(0, math.sqrt(upstream), (upstream, current))
-        bias_generator = lambda current : np.random.normal(0, 1, current)
-        stepper = lambda action:  env.step(action)
-
-
-    upstream_count = layer_node_count[0]
-
-    for i in layer_node_count[1:]:
+    upstream_count = config["layer node count"][0]
+    for i in config["layer node count"][1:]:
         weights.append(weight_generator(upstream_count, i))
         bias.append(bias_generator(i))
         upstream_count = i
 
-    config = {
-        "weights": weights,
-        "bias": bias,
-        "learning rate": .00001,
-        "debug": debug,
-        "batch size": 1
-    }
+    config["weights"] = weights
+    config["bias"] = bias
+    return config, stepper, init_env, env
 
-    model = []
-    nn = NN(config)
+
+def choose_action(nn, state, temp):
+    action_values = nn.feed_forward(state)[1][-1]
+    action_probabilities = nn.get_probabilities(action_values[np.newaxis, :], temp)
+    choice_range = len(action_values)
+    choice = np.random.choice(choice_range, p=action_probabilities[0])
+    predicted_value = np.dot(action_values, action_probabilities[0])
+    return choice, predicted_value
+
+
+def update_model(config, model, state, action, state_prime, reward, done):
+    model_entry = [state, action, state_prime, reward, done]
+    model.append(model_entry)
+    if len(model) > config["model size"]:
+        del model[0]
+
+
+def main():
+    config, stepper, init_env, env = initialize()
+
+    for learning_rate in [config["learning rate"]]:
+        print("using learning rate ", learning_rate)
+
+        config, stepper, init_env, env = initialize()
+        debug = config["debug"]
+        model = []
+        nn = NN(config)
+        rendering = False
+        total_episode_count = 0
+
+        temp = config["initial temp"]
+        while total_episode_count < config["number episodes"]:
+            batch_episode_count = 0
+            batch_reward = 0
+            while batch_episode_count < config["report frequency"]:
+                batch_reward += run_episode(config, debug, env,
+                                            init_env, model, nn, rendering, stepper, temp,
+                                            )
+                batch_episode_count += 1
+                temp = temp * config["temp adjustment"]
+                rendering = False
+            total_episode_count += batch_episode_count
+            add_value(batch_reward / batch_episode_count, "Avg reward")
+            live_plotter()
+            rendering = True
+            print("avg reward this batch: ", batch_reward / batch_episode_count)
+        env.close()
+
+
+def run_episode(config, debug, env, init_env, model, nn, rendering, stepper, temp):
+    episode_total_reward = 0
+    episode_time_step = 0
+
+    state = init_env()
+    action_selected, prediction = choose_action(nn, state, temp)
+
+    episode_prediction = prediction
     while True:
-        if debug:
-            state = np.ones(layer_node_count[0])
-        else:
-            state = env.reset()
 
-        action = choose_action(nn, state)
-        total_reward = 0
-        rendering =  i % 100 == 0 and i != 0
+        if not debug and rendering:
+            env.render()
 
-        t = 0
-        while True:
-            if rendering:
-                env.render()
-            # time.sleep(.001)
-            nn.feed_forward(state)
-            state_prime, reward, done, info = stepper(action)
-            update_model()
+        state_prime, reward, done, info = stepper(action_selected)
+
+        if done and reward == 100:
+            print("plus 100!  action", action_selected, "\nnew state", state_prime, "\nreward ", reward)
+
+        if debug and episode_time_step == 9:
+            done = True
+            reward = 0
+
+        update_model(config, model, state, action_selected, state_prime, reward, done)
+        episode_total_reward += reward
+        # update_action_values(nn, [[state, action, state_prime, reward, done]])
+        if len(model) > config["experience replay size"]:
+            for i in range(config["replay batches"]):
+                choices = np.random.choice(len(model), min(len(model), config["experience replay size"]))
+                states = [model[i][0] for i in choices]
+                actions = [model[i][1] for i in choices]
+                next_states = [model[i][2] for i in choices]
+                rewards = [model[i][3] for i in choices]
+                finals = [model[i][4] for i in choices]
+                nn.adam_update(states, actions, next_states, rewards, finals, temp, config["discount"])
+        if done:
+            print("done with final reward ", reward, " total ", episode_total_reward, " temp ", temp, " in ", episode_time_step)
+            break
+        action_selected, prediction = choose_action(nn, state_prime, temp)
+        if state_prime[6] == 1.0 and state_prime[7] == 1.0 and state_prime[3] < .02 and state_prime[2] < .02:
+            print("touchdown", state, " reward ", reward, " next action ", action_selected)
+            #action_selected = 0
+        episode_prediction += prediction
+        state = state_prime
+        episode_time_step += 1
+    delta = episode_total_reward - (episode_prediction / episode_time_step)
+    add_value(delta, "prediction delta ")
+    return episode_total_reward
 
 
-            if debug and t % 10 == 0 and t != 0:
-                done = True
-                reward = 0
-                t = 0
-            else:
-                t +=1
-
-            total_reward += reward
-            update_action_values(nn, state, action, state_prime, reward, done)
-            if done:
-                if reward > 0:
-                    print ("done with final reward ", total_reward)
-                break
-            action = choose_action(nn, state_prime)
-            state = state_prime
-        exp_replay_size = 2
-        if len(model) > exp_replay_size:
-            for _ in range(exp_replay_size):
-                choice = random.choice(model)
-                nn.feed_forward(choice["state"])
-                update_action_values(nn, choice["state"], choice["action"], choice["state prime"], choice["reward"], choice["done"])
-        avg_reward += total_reward
-        i += 1
-        rep_freq = 100
-        if i % rep_freq == 0:
-            graph_average_reward(avg_reward / rep_freq)
-            avg_reward = 0
-env.close()
+tests.run_tests()
+main()
