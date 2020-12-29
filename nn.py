@@ -3,7 +3,6 @@ import numpy as np
 from graphing import *
 import copy
 
-np.random.seed(1)
 
 
 class NN(object):
@@ -41,13 +40,14 @@ class NN(object):
 
         return zs, activations
 
-    def get_probabilities(self, action_values, temp):
+    @staticmethod
+    def softmax(action_values, temp):
         temp_adjusted_action_values = action_values / temp
         max_value = np.max(temp_adjusted_action_values, axis=1)
         weights = np.exp(temp_adjusted_action_values - max_value[:, np.newaxis])
-        sum_total = np.sum(weights, axis=1)
+
         action_probabilities = weights / np.sum(weights, axis=1)[:, np.newaxis]
-        if np.random.random() > .9999:
+        if np.random.random() > .999:
             print("action values: ", action_values)
         return action_probabilities
 
@@ -58,16 +58,41 @@ class NN(object):
         return costs
 
     def get_next_states_prediction(self, next_states, finals, temp):
-        activations = self.feed_forward(next_states)[1][-1]
 
-        action_probabilities = self.get_probabilities(activations, temp)
+        activations = self.feed_forward(next_states)[1][-1]
+        action_variance = np.var(np.var(activations, axis=0))
+
+        add_value(action_variance, "action variance")
+
+        action_probabilities = self.softmax(activations, temp)
         state_prime_values = np.sum(np.multiply(activations, action_probabilities), axis=1) * (1 - np.array(finals))
         return state_prime_values
 
-    def adam_update(self, states, actions, next_states, rewards, finals, temp, discount):
+    def update_params(self, states, actions, next_states, rewards, finals, temp, discount):
         # pre_costs = self.get_cost(states, actions, targets)
-        batch_bias_grad, batch_weight_grad = self.calc_gradients(states, actions, next_states, rewards, finals, temp,
-                                                                 discount)
+        states_stack = np.row_stack(states)
+        zs, activations = self.feed_forward(states_stack)
+        error = self.get_td_error(activations, actions, next_states, rewards, finals, temp, discount)
+        batch_bias_grad, batch_weight_grad = self.calc_gradients(states,error, zs, activations)
+
+        weight_deltas, bias_deltas = self.get_update_deltas(batch_weight_grad, batch_bias_grad)
+        for i in range(len(weight_deltas)):
+
+            self.bias[i] -= bias_deltas[i]
+            self.weights[i] -= weight_deltas[i]
+            # print(self.adam_m_modifier)
+
+        first_moment_decay_rate = self.config["first moment decay rate"]
+        second_moment_decay_rate = self.config["second moment decay rate"]
+        self.adam_m_modifier *= first_moment_decay_rate
+        self.adam_variance_modifier *= second_moment_decay_rate
+
+        if np.random.rand() > .999:
+            self.debug_weights()
+            # post_costs = self.get_cost(states, action_indices)
+            # cost_delta = np.sum(post_costs - pre_costs)
+
+    def get_update_deltas(self, batch_weight_grad, batch_bias_grad):
 
         first_moment_decay_rate = self.config["first moment decay rate"]
         second_moment_decay_rate = self.config["second moment decay rate"]
@@ -100,36 +125,26 @@ class NN(object):
             unbiased_weights_second_moment.append(self.weights_second_moment[i] / second_moment_bias_corrector)
             unbiased_bias_second_moment.append(self.bias_second_moment[i] / second_moment_bias_corrector)
 
+        weight_deltas = []
+        bias_deltas = []
         for i in range(self.num_layers):
             weight_denominator = np.sqrt(unbiased_weights_second_moment[i]) + self.adam_epsilon
             weights_gradient = unbiased_weights_first_moment[i] / weight_denominator
             weight_delta = self.learning_rate * weights_gradient
-            self.weights[i] -= weight_delta
+            weight_deltas.append(weight_delta)
             bias_denominator = np.sqrt(unbiased_bias_second_moment[i]) + self.adam_epsilon
             bias_gradient = unbiased_bias_first_moment[i] / bias_denominator
-            bias_delta = self.learning_rate * bias_gradient[0]
-            self.bias[i] -= bias_delta
+            bias_delta = self.learning_rate * bias_gradient
+            bias_deltas.append(bias_delta)
             # print("wd ", weight_delta, " bd ", bias_delta)
 
-        # print(self.adam_m_modifier)
-        self.adam_m_modifier *= first_moment_decay_rate
-        self.adam_variance_modifier *= second_moment_decay_rate
+        return weight_deltas, bias_deltas  # post_costs - pre_costs
 
-        if np.random.rand() > .999:
-            self.debug_weights()
-        # post_costs = self.get_cost(states, action_indices)
-        # cost_delta = np.sum(post_costs - pre_costs)
-
-        return 0  # post_costs - pre_costs
-
-    def calc_gradients(self, states, actions, next_states, rewards, finals, temp, discount):
+    def calc_gradients(self,states_stack, error, zs, activations):
         weight_grad = []
         bias_grad = []
         # Last layer
-        states_stack = np.row_stack(states)
-        zs, activations = self.feed_forward(states_stack)
 
-        error = self.get_td_error(activations, actions, next_states, rewards, finals, temp, discount)
         last_hidden_activations = activations[-2][np.newaxis, :]
         rotated_z_act = np.transpose(last_hidden_activations, axes=(1, 2, 0))
         rotated_z_err = np.transpose(error[np.newaxis,:], axes=(1, 0, 2))

@@ -8,7 +8,7 @@ plt.style.use('ggplot')
 
 values = {}
 
-np.random.seed(1)
+# np.random.seed(1)
 graph_range = 300
 
 reinit = False
@@ -32,7 +32,7 @@ def live_plotter(pause_time=0.01):
     if fig is None or reinit:
         if fig is not None:
             plt.close(fig)
-        fig, ax_global = plt.subplots(num_plots, figsize=(13,7))
+        fig, ax_global = plt.subplots(num_plots, figsize=(10,5))
         reinit = False
 
     i = 0

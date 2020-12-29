@@ -1,7 +1,7 @@
 import gym
 import tests
 from nn import NN
-
+import scipy.signal as sig
 from graphing import *
 
 np.random.seed(1)
@@ -23,12 +23,12 @@ def init_saxe(rows, cols):
 
 
 def initialize():
-    env = gym.make('LunarLander-v2')
+    env = gym.make('SpaceInvaders-v0')
     # env.seed(0)
     config = {
-        "learning rate": 1e-3,
+        "learning rate": 3 * 1e-3,
         "debug": False,
-        "layer node count": [8, 256, 4],
+        "layer node count": [432, 32, 5],
         "first moment decay rate": .9,
         #"first moment decay rate": 0,
         "second moment decay rate": .999,
@@ -37,9 +37,10 @@ def initialize():
         "replay batches": 4,
         "model size": 50000,
         "discount": .99,
-        "report frequency": 10,
+        "report frequency": 1,
         "number episodes": np.inf,
-        "initial temp": .001,
+        "rendering": "never",
+        "initial temp": .01,
         "temp adjustment": 1,
         "adam epsilon": 1e-8
     }
@@ -91,7 +92,7 @@ def initialize():
 
 def choose_action(nn, state, temp):
     action_values = nn.feed_forward(state)[1][-1]
-    action_probabilities = nn.get_probabilities(action_values[np.newaxis, :], temp)
+    action_probabilities = nn.softmax(action_values[np.newaxis, :], temp)
     choice_range = len(action_values)
     choice = np.random.choice(choice_range, p=action_probabilities[0])
     predicted_value = np.dot(action_values, action_probabilities[0])
@@ -132,7 +133,8 @@ def main():
             total_episode_count += batch_episode_count
             add_value(batch_reward / batch_episode_count, "Avg reward")
             live_plotter()
-            rendering = True
+            if config["rendering"] != "never":
+                rendering = True
             print("avg reward this batch: ", batch_reward / batch_episode_count)
         env.close()
 
@@ -142,18 +144,20 @@ def run_episode(config, debug, env, init_env, model, nn, rendering, stepper, tem
     episode_time_step = 0
 
     state = init_env()
+
+    state = extra_simplified_state(state)
     action_selected, prediction = choose_action(nn, state, temp)
 
     episode_prediction = prediction
     while True:
 
-        if not debug and rendering:
+        if not debug and (rendering or config["rendering"] == "always"):
             env.render()
 
         state_prime, reward, done, info = stepper(action_selected)
-
-        if done and reward == 100:
-            print("plus 100!  action", action_selected, "\nnew state", state_prime, "\nreward ", reward)
+        state_prime = extra_simplified_state(state_prime)
+        if reward > 0:
+            print("reward!  action", action_selected, "\nreward ", reward)
 
         if debug and episode_time_step == 9:
             done = True
@@ -170,20 +174,25 @@ def run_episode(config, debug, env, init_env, model, nn, rendering, stepper, tem
                 next_states = [model[i][2] for i in choices]
                 rewards = [model[i][3] for i in choices]
                 finals = [model[i][4] for i in choices]
-                nn.adam_update(states, actions, next_states, rewards, finals, temp, config["discount"])
+                nn.update_params(states, actions, next_states, rewards, finals, temp, config["discount"])
         if done:
             print("done with final reward ", reward, " total ", episode_total_reward, " temp ", temp, " in ", episode_time_step)
             break
         action_selected, prediction = choose_action(nn, state_prime, temp)
-        if state_prime[6] == 1.0 and state_prime[7] == 1.0 and state_prime[3] < .02 and state_prime[2] < .02:
-            print("touchdown", state, " reward ", reward, " next action ", action_selected)
-            #action_selected = 0
         episode_prediction += prediction
         state = state_prime
         episode_time_step += 1
     delta = episode_total_reward - (episode_prediction / episode_time_step)
     add_value(delta, "prediction delta ")
     return episode_total_reward
+
+
+def extra_simplified_state(state):
+    rgb_weights = [0.2989, 0.5870, 0.1140]
+    grayscale = np.dot(state[..., :3], rgb_weights)
+    convolved = sig.convolve2d(grayscale, np.ones((8, 8)), mode='valid')[::4, ::4]
+    convolved2 = sig.convolve2d(convolved, np.ones((4, 4)), mode='valid')[::2, ::2]
+    return convolved2.flatten()
 
 
 tests.run_tests()
